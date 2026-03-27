@@ -242,45 +242,6 @@ struct PackedGlyphData {
       PackGlyph(glyph);
     }
   }
-
-  struct OutTexture {
-    uint32_t curveSSBO;
-    uint32_t bandSplitSSBO;
-
-    void Cleanup() {
-      rlUnloadShaderBuffer(curveSSBO);
-      rlUnloadShaderBuffer(bandSplitSSBO);
-
-      TraceLog(LOG_INFO, "Unloaded SSBOs: Curve SSBO (%d), Band Split SSBO (%d)", curveSSBO, bandSplitSSBO);
-    }
-  };
-
-  OutTexture CreateTextures() {
-    OutTexture outTexture;
-
-    outTexture.curveSSBO     = rlLoadShaderBuffer(curveData.size(), curveData.data(), RL_DYNAMIC_DRAW);
-    outTexture.bandSplitSSBO = rlLoadShaderBuffer(bandSplitData.size() * sizeof(uint32_t), bandSplitData.data(), RL_DYNAMIC_DRAW);
-
-    TraceLog(LOG_INFO, "Curve Data SSBO (%d): (Actual Data Size: %d bytes)", outTexture.curveSSBO, curveData.size());
-    TraceLog(LOG_INFO, "Band Split Data SSBO (%d): (Actual Data Size: %d bytes)", outTexture.bandSplitSSBO, bandSplitData.size());
-    return outTexture;
-  }
-};
-
-struct SlugShader {
-  uint32_t shaderProgram;
-
-  SlugShader() {
-    char* vertexShaderCode   = LoadFileText("vert.glsl");
-    char* fragmentShaderCode = LoadFileText("frag.glsl");
-    shaderProgram            = rlLoadShaderProgram(vertexShaderCode, fragmentShaderCode);
-    UnloadFileText(vertexShaderCode);
-    UnloadFileText(fragmentShaderCode);
-  }
-
-  ~SlugShader() {
-    rlUnloadShaderProgram(shaderProgram);
-  }
 };
 
 #include <external/glad.h>
@@ -289,12 +250,7 @@ struct SlugFont {
   std::vector<Glyph>           glyphs;
   std::unordered_map<int, int> codepointToGlyphIndex;
 
-  SlugShader                  slugShader;
-  PackedGlyphData             packedData;
-  PackedGlyphData::OutTexture ssbos;
-  uint32_t                    vertDataSSBO;
-
-  uint32_t dummyVAO;
+  PackedGlyphData packedData;
 
   struct SlugVertex {
     float pos[4];// xy: pos, zw: normal
@@ -352,6 +308,45 @@ struct SlugFont {
     }
   };
 
+  struct RenderResources {
+    uint32_t shaderProgram = 0;
+    uint32_t curveSSBO     = 0;
+    uint32_t bandSplitSSBO = 0;
+    uint32_t vertDataSSBO  = 0;
+    uint32_t dummyVAO      = 0;
+
+    void Create(const PackedGlyphData& packedData, int vertDataSize) {
+      char* vertexShaderCode   = LoadFileText("vert.glsl");
+      char* fragmentShaderCode = LoadFileText("frag.glsl");
+      shaderProgram            = rlLoadShaderProgram(vertexShaderCode, fragmentShaderCode);
+      UnloadFileText(vertexShaderCode);
+      UnloadFileText(fragmentShaderCode);
+
+      curveSSBO     = rlLoadShaderBuffer(packedData.curveData.size(), (void*) packedData.curveData.data(), RL_DYNAMIC_DRAW);
+      bandSplitSSBO = rlLoadShaderBuffer(packedData.bandSplitData.size() * sizeof(uint32_t), (void*) packedData.bandSplitData.data(), RL_DYNAMIC_DRAW);
+
+      SlugVertex dummyVertex = {};
+      vertDataSSBO           = rlLoadShaderBuffer(vertDataSize, &dummyVertex, RL_DYNAMIC_DRAW);
+      dummyVAO               = rlLoadVertexArray();
+
+      TraceLog(LOG_INFO, "Curve Data SSBO (%d): (Actual Data Size: %d bytes)", curveSSBO, packedData.curveData.size());
+      TraceLog(LOG_INFO, "Band Split Data SSBO (%d): (Actual Data Size: %d bytes)", bandSplitSSBO, packedData.bandSplitData.size());
+      TraceLog(LOG_INFO, "Vertex Data SSBO: %d (Size: %d bytes)", vertDataSSBO, vertDataSize);
+    }
+
+    void Cleanup() {
+      rlUnloadVertexArray(dummyVAO);
+      rlUnloadShaderBuffer(vertDataSSBO);
+      rlUnloadShaderBuffer(curveSSBO);
+      rlUnloadShaderBuffer(bandSplitSSBO);
+      rlUnloadShaderProgram(shaderProgram);
+
+      TraceLog(LOG_INFO, "Unloaded SSBOs: Curve SSBO (%d), Band Split SSBO (%d)", curveSSBO, bandSplitSSBO);
+    }
+  };
+
+  RenderResources resources;
+
   SlugFont(stbtt_fontinfo& fontInfo, const int* codepoints, const int nCodepoints) {
     for (int i = 0; i < nCodepoints; ++i) {
       const int codepoint = codepoints[i];
@@ -361,24 +356,15 @@ struct SlugFont {
     }
 
     packedData.PackGlyphs(glyphs);
-    ssbos = packedData.CreateTextures();
-
-    int        vertDataSize = sizeof(SlugVertex) * 4;// 4 vertices for a quad
-    SlugVertex dummyVertex  = {};
-    vertDataSSBO            = rlLoadShaderBuffer(vertDataSize, &dummyVertex, RL_DYNAMIC_DRAW);
-    TraceLog(LOG_INFO, "Vertex Data SSBO: %d (Size: %d bytes)", vertDataSSBO, vertDataSize);
-
-    dummyVAO = rlLoadVertexArray();
+    resources.Create(packedData, sizeof(SlugVertex) * 4);
   }
 
   ~SlugFont() {
-    rlUnloadVertexArray(dummyVAO);
-    rlUnloadShaderBuffer(vertDataSSBO);
-    ssbos.Cleanup();
+    resources.Cleanup();
   }
 
   void UploadVertexData(const SlugVertex* vert) {
-    rlUpdateShaderBuffer(vertDataSSBO, vert, sizeof(SlugVertex) * 4, 0);
+    rlUpdateShaderBuffer(resources.vertDataSSBO, vert, sizeof(SlugVertex) * 4, 0);
   }
 
   void RenderChar(int codepoint, Vector2 position) {
@@ -426,11 +412,11 @@ struct SlugFont {
 
     UploadVertexData(vertices);
 
-    rlEnableShader(slugShader.shaderProgram);
+    rlEnableShader(resources.shaderProgram);
 
-    rlBindShaderBuffer(vertDataSSBO, 0);
-    rlBindShaderBuffer(ssbos.curveSSBO, 1);
-    rlBindShaderBuffer(ssbos.bandSplitSSBO, 2);
+    rlBindShaderBuffer(resources.vertDataSSBO, 0);
+    rlBindShaderBuffer(resources.curveSSBO, 1);
+    rlBindShaderBuffer(resources.bandSplitSSBO, 2);
 
     Matrix model      = rlGetMatrixTransform();
     Matrix view       = rlGetMatrixModelview();
@@ -438,16 +424,16 @@ struct SlugFont {
 
     Matrix mv     = MatrixMultiply(model, view);
     Matrix mvp    = MatrixMultiply(mv, projection);
-    int    mvpLoc = rlGetLocationUniform(slugShader.shaderProgram, "u_mvp");
+    int    mvpLoc = rlGetLocationUniform(resources.shaderProgram, "u_mvp");
     rlSetUniformMatrix(mvpLoc, mvp);
 
     float viewport[2] = {(float) GetScreenWidth(), (float) GetScreenHeight()};
-    int   viewLoc     = rlGetLocationUniform(slugShader.shaderProgram, "u_viewport");
+    int   viewLoc     = rlGetLocationUniform(resources.shaderProgram, "u_viewport");
     rlSetUniform(viewLoc, viewport, RL_SHADER_UNIFORM_VEC2, 1);
 
     rlDisableBackfaceCulling();
     rlDisableDepthTest();
-    rlEnableVertexArray(dummyVAO);
+    rlEnableVertexArray(resources.dummyVAO);
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
     rlDisableVertexArray();
 
