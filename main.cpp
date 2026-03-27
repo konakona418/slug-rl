@@ -295,11 +295,11 @@ struct SlugFont {
       float nx, float ny,
       float u, float v,
 
-      uint32_t curveOffset,
-      uint32_t bandOffset,
-      uint16_t maxBandX,
-      uint16_t maxBandY,
-      float    invJac,
+      uint32_t             curveOffset,
+      uint32_t             bandOffset,
+      uint16_t             maxBandX,
+      uint16_t             maxBandY,
+      std::array<float, 4> inverseJacobian,
 
       std::array<float, 4> bandParams,
       float r = 1.0f, float g = 1.0f, float b = 1.0f, float a = 1.0f) {
@@ -320,10 +320,10 @@ struct SlugFont {
       uint32_t packedW = (flags << 24) | ((maxBandY & 0xFF) << 8) | (maxBandX & 0xFF);
       memcpy(&vert.tex[3], &packedW, 4);
 
-      vert.jac[0] = invJac;
-      vert.jac[1] = 0.0f;
-      vert.jac[2] = 0.0f;
-      vert.jac[3] = invJac;
+      vert.jac[0] = inverseJacobian[0];
+      vert.jac[1] = inverseJacobian[1];
+      vert.jac[2] = inverseJacobian[2];
+      vert.jac[3] = inverseJacobian[3];
 
       vert.bnd[0] = bandParams[0];
       vert.bnd[1] = bandParams[1];
@@ -338,6 +338,32 @@ struct SlugFont {
       return vert;
     }
   };
+
+  static std::array<float, 4> CalculateInverseJacobian(Vector2 p0, Vector2 p1, Vector2 p3, Vector2 t0, Vector2 t1, Vector2 t3) {
+    Vector2 pDx = Vector2Subtract(p1, p0);
+    Vector2 pDy = Vector2Subtract(p3, p0);
+    Vector2 tDx = Vector2Subtract(t1, t0);
+    Vector2 tDy = Vector2Subtract(t3, t0);
+
+    float det = pDx.x * pDy.y - pDy.x * pDx.y;
+    if (fabsf(det) < 1.0e-8f) {
+      return {1.0f, 0.0f, 0.0f, 1.0f};
+    }
+
+    float invDet = 1.0f / det;
+
+    float invP00 = pDy.y * invDet;
+    float invP01 = -pDy.x * invDet;
+    float invP10 = -pDx.y * invDet;
+    float invP11 = pDx.x * invDet;
+
+    float jac00 = tDx.x * invP00 + tDy.x * invP10;
+    float jac01 = tDx.x * invP01 + tDy.x * invP11;
+    float jac10 = tDx.y * invP00 + tDy.y * invP10;
+    float jac11 = tDx.y * invP01 + tDy.y * invP11;
+
+    return {jac00, jac01, jac10, jac11};
+  }
 
   struct RenderResources {
     uint32_t shaderProgram = 0;
@@ -415,36 +441,43 @@ struct SlugFont {
     float x      = position.x + glyph.bounds.x;
     float y      = position.y - glyph.bounds.y - glyph.bounds.height;
 
-    // todo: calculate actual Jacobian based on curve complexity for better AA quality
-    float invJac = 1.0f;
+    Vector2 p0 = {x, y};
+    Vector2 p1 = {x + width, y};
+    Vector2 p3 = {x, y + height};
+
+    Vector2 t0 = {glyph.bounds.x, glyph.bounds.y + height};
+    Vector2 t1 = {glyph.bounds.x + width, glyph.bounds.y + height};
+    Vector2 t3 = {glyph.bounds.x, glyph.bounds.y};
+
+    std::array<float, 4> inverseJacobian = CalculateInverseJacobian(p0, p1, p3, t0, t1, t3);
 
     SlugVertex vertices[4] = {
       SlugVertex::Create(
         x, y, -1, -1,
         glyph.bounds.x, glyph.bounds.y + height,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, invJac,
+        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
       SlugVertex::Create(
         x + width, y,
         1, -1,
         glyph.bounds.x + width, glyph.bounds.y + height,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, invJac,
+        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
       SlugVertex::Create(
         x + width, y + height,
         1, 1,
         glyph.bounds.x + width, glyph.bounds.y,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, invJac,
+        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
       SlugVertex::Create(
         x, y + height,
         -1, 1,
         glyph.bounds.x, glyph.bounds.y,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, invJac,
+        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
     };
 
@@ -504,10 +537,13 @@ void DrawCodepointSlug(SlugFont& slugFont, int codepoint, Vector2 position, Vect
   rlPopMatrix();
 }
 
-void DrawCodepointsSlug(SlugFont& slugFont, const int* codepoints, int nCodepoints, Vector2 position, Vector2 scale = {0.05f, 0.05f}) {
-  // todo: this scale is very suboptimal. should calculate based on font size and desired pixel height
-  float startX   = 100.0f;
-  float startY   = 100.0f;
+void DrawCodepointsSlug(SlugFont& slugFont, const int* codepoints, int nCodepoints, Vector2 position, float pixelSize = 48.0f) {
+  float   lineHeight   = slugFont.GetLineAdvance();
+  float   uniformScale = lineHeight > 0.0f ? pixelSize / lineHeight : 1.0f;
+  Vector2 scale        = {uniformScale, uniformScale};
+
+  float startX   = position.x;
+  float startY   = position.y;
   float penX     = startX;
   float baseline = startY + slugFont.GetAscent() * scale.y;
 
@@ -559,7 +595,7 @@ int main(int argc, char** argv) {
     BeginBlendMode(BLEND_ALPHA);
     ClearBackground(BLACK);
 
-    DrawCodepointsSlug(slugFont, codepoints, nCodepoints, {100.0f, 100.0f}, {0.036f, 0.036f});
+    DrawCodepointsSlug(slugFont, codepoints, nCodepoints, {25.0f, 25.0f}, 64.0f);
 
     EndBlendMode();
     EndDrawing();
