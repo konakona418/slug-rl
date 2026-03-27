@@ -48,12 +48,12 @@ struct Band {
 
       float maxA =
         vertical
-          ? std::max({cA.from.x, cA.control.x, cA.to.x})
-          : std::max({cA.from.y, cA.control.y, cA.to.y});
+          ? std::max({cA.from.y, cA.control.y, cA.to.y})
+          : std::max({cA.from.x, cA.control.x, cA.to.x});
       float maxB =
         vertical
-          ? std::max({cB.from.x, cB.control.x, cB.to.x})
-          : std::max({cB.from.y, cB.control.y, cB.to.y});
+          ? std::max({cB.from.y, cB.control.y, cB.to.y})
+          : std::max({cB.from.x, cB.control.x, cB.to.x});
 
       return maxA > maxB;
     });

@@ -109,8 +109,7 @@ void main() {
     vec4        p12      = vec4(c.x0, c.y0, c.x1, c.y1) - v_texcoord.xyxy;
     vec2        p3       = vec2(c.x2, c.y2) - v_texcoord;
 
-    // todo: something wrong with early exit condition, need to debug
-    //if (max(max(p12.y, p12.w), p3.y) * pixelsPerEm.y < -0.5) break;
+    if (max(max(p12.y, p12.w), p3.y) * pixelsPerEm.y < -0.5) break;
 
     uint code = CalcRootCode(p12.x, p12.z, p3.x);
     if (code != 0u) {
