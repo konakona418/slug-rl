@@ -395,14 +395,14 @@ struct SlugFont {
     SlugVertex vertices[4] = {
       SlugVertex::Create(
         x, y, -1, -1,
-        glyph.bounds.x, height,
+        glyph.bounds.x, glyph.bounds.y + height,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, invJac,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
       SlugVertex::Create(
         x + width, y,
         1, -1,
-        glyph.bounds.x + width, height,
+        glyph.bounds.x + width, glyph.bounds.y + height,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, invJac,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
