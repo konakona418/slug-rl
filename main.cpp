@@ -1,6 +1,19 @@
+// Slug Text Rendering Algorithm Implementation
+//
+// Based on the paper "GPU-Centered Font Rendering Directly from Glyph Outlines"
+// by Eric Lengyel published on 2017-06-14
+//
+// This implementation also refers to the sample HLSL shader code provided
+// at: https://github.com/EricLengyel/Slug
+//
+// By Zimeng Li (@konakona418)
+
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
+
+// abstraction leak!
+#include <external/glad.h>
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
@@ -10,20 +23,33 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <set>
 #include <unordered_map>
 #include <vector>
 
+#ifdef USE_ZHCN_TEST_STR
 #define FONT_FILENAME "NotoSansSC-Regular.ttf"
-#define TEST_STR                                                                        \
-  "燕子去了，有再來的時候；楊柳枯了，有再靑的時候；\n"          \
-  "桃花謝了，有再開的時候。\n"                                              \
-  "但是，聰明的，你吿訴我，我們的日子爲什麼一去不復返呢？\n" \
-  "——是有人偷了他們罷：那是誰？又藏在何處呢？\n"                \
-  "是他們自己逃走了罷：現在又到了那裏呢？"
-
-// seems that characters like dash '-' and '一' are not rendered correctly,
-// perhaps because they are very small?
+#define TEST_STR                           \
+  "燕子去了，有再来的时候；\n" \
+  "杨柳枯了，有再青的时候；\n" \
+  "桃花谢了，有再开的时候。\n" \
+  "但是，聪明的，你告诉我，\n" \
+  "我们的日子为什么一去不复返呢？\n"
+#elif defined(USE_JA_TEST_STR)
+#define FONT_FILENAME "NotoSansJP-Regular.ttf"
+#define TEST_STR                                                                              \
+  "日本国民は、正義と秩序を基調とする国際平和を誠実に希求し、\n" \
+  "国権の発動たる戦争と、武力による威嚇又は武力の行使は、\n"       \
+  "国際紛争を解決する手段としては、永久にこれを放棄する。"
+#else
+#define FONT_FILENAME "NotoSansSC-Regular.ttf"
+#define TEST_STR                                   \
+  "Four score and seven years ago\n"               \
+  "our fathers brought forth on this continent,\n" \
+  "a new nation, conceived in Liberty,\n"          \
+  "and dedicated to the proposition that all men are created equal."
+#endif
 
 static const char kWindowTitle[] = "Slug Text Rendering";
 static const int  kWindowWidth   = 1280;
@@ -31,233 +57,231 @@ static const int  kWindowHeight  = 720;
 
 static constexpr int kBandSplits = 16;
 
-struct BCurve {
-  Vector2 from;
-  Vector2 control;
-  Vector2 to;
-};
-
-struct Band {
-  std::vector<int> curveIndices;
-
-  void SortIndicesBasedOnMaxPos(const std::vector<BCurve>& curves, const bool vertical) {
-    std::sort(curveIndices.begin(), curveIndices.end(), [&](const int a, const int b) {
-      const auto& cA = curves[a];
-      const auto& cB = curves[b];
-
-      float maxA =
-        vertical
-          ? std::max({cA.from.y, cA.control.y, cA.to.y})
-          : std::max({cA.from.x, cA.control.x, cA.to.x});
-      float maxB =
-        vertical
-          ? std::max({cB.from.y, cB.control.y, cB.to.y})
-          : std::max({cB.from.x, cB.control.x, cB.to.x});
-
-      return maxA > maxB;
-    });
-  }
-
-  Band() = default;
-
-  Band(std::vector<BCurve>& curves, bool vertical, float minB, float maxB) {
-    for (int i = 0; i < (int) curves.size(); ++i) {
-      const auto& c = curves[i];
-
-      float cMin =
-        vertical
-          ? std::min({c.from.x, c.control.x, c.to.x})
-          : std::min({c.from.y, c.control.y, c.to.y});
-      float cMax =
-        vertical
-          ? std::max({c.from.x, c.control.x, c.to.x})
-          : std::max({c.from.y, c.control.y, c.to.y});
-
-      if (cMax >= minB && cMin <= maxB) {
-        curveIndices.push_back(i);
-      }
-    }
-    SortIndicesBasedOnMaxPos(curves, vertical);
-  }
-};
-
-struct Glyph {
-  int                 codepoint;
-  Rectangle           bounds;
-  std::vector<BCurve> curves;
-  int                 advanceWidth;
-  int                 leftSideBearing;
-
-  std::array<Band, kBandSplits> bandV;
-  std::array<Band, kBandSplits> bandH;
-
-  float bandOffsetV, bandScaleV;
-  float bandOffsetH, bandScaleH;
-
-  Glyph(stbtt_fontinfo& fontInfo, const int codepoint) {
-    this->codepoint = codepoint;
-
-    stbtt_GetCodepointHMetrics(&fontInfo, codepoint, &advanceWidth, &leftSideBearing);
-
-    int x0, y0, x1, y1;
-    stbtt_GetCodepointBox(&fontInfo, codepoint, &x0, &y0, &x1, &y1);
-    bounds = {
-      static_cast<float>(x0),
-      static_cast<float>(y0),
-      static_cast<float>(x1 - x0),
-      static_cast<float>(y1 - y0),
-    };
-
-    stbtt_vertex* vertices;
-
-    int nCurves = 0;
-    nCurves     = stbtt_GetCodepointShape(&fontInfo, codepoint, &vertices);
-
-    int lastX = 0;
-    int lastY = 0;
-    for (int i = 0; i < nCurves; ++i) {
-      const auto& v = vertices[i];
-
-      if (v.type == STBTT_vmove) {
-        lastX = v.x;
-        lastY = v.y;
-      } else if (v.type == STBTT_vline) {
-        BCurve curve;
-        curve.from    = {static_cast<float>(lastX), static_cast<float>(lastY)};
-        curve.control = {static_cast<float>(v.x + lastX) / 2.0f, static_cast<float>(v.y + lastY) / 2.0f};
-        curve.to      = {static_cast<float>(v.x), static_cast<float>(v.y)};
-
-        lastX = v.x;
-        lastY = v.y;
-
-        curves.push_back(curve);
-        //TraceLog(LOG_INFO, "Line Curve: From (%.2f, %.2f) To (%.2f, %.2f)", curve.from.x, curve.from.y, curve.to.x, curve.to.y);
-      } else if (v.type == STBTT_vcurve) {
-        BCurve curve;
-        curve.from    = {static_cast<float>(lastX), static_cast<float>(lastY)};
-        curve.control = {static_cast<float>(v.cx), static_cast<float>(v.cy)};
-        curve.to      = {static_cast<float>(v.x), static_cast<float>(v.y)};
-
-        lastX = v.x;
-        lastY = v.y;
-
-        curves.push_back(curve);
-        //TraceLog(LOG_INFO, "Bezier Curve: From (%.2f, %.2f) Control (%.2f, %.2f) To (%.2f, %.2f)", curve.from.x, curve.from.y, curve.control.x, curve.control.y, curve.to.x, curve.to.y);
-      }
-    }
-
-    bandScaleV  = (float) kBandSplits / bounds.width;
-    bandOffsetV = -bounds.x * bandScaleV;
-
-    bandScaleH  = (float) kBandSplits / bounds.height;
-    bandOffsetH = -bounds.y * bandScaleH;
-
-    for (int i = 0; i < kBandSplits; ++i) {
-      float xMin = bounds.x + (bounds.width * i) / (float) kBandSplits;
-      float xMax = bounds.x + (bounds.width * (i + 1)) / (float) kBandSplits;
-      bandV[i]   = Band(curves, true, xMin, xMax);
-
-      float yMin = bounds.y + (bounds.height * i) / (float) kBandSplits;
-      float yMax = bounds.y + (bounds.height * (i + 1)) / (float) kBandSplits;
-      bandH[i]   = Band(curves, false, yMin, yMax);
-    }
-
-    stbtt_FreeShape(&fontInfo, vertices);
-  }
-};
-
-static Vector2 CvtCoordToScreen(const Vector2 coord) {
-  return {coord.x, -coord.y + kWindowHeight};
-}
-
-
-struct PackedGlyphData {
-  // [GlyphMeta, Curve0, Curve1, ...] [GlyphMeta, Curve0, Curve1, ...] ...
-  std::vector<uint8_t> curveData;
-  // [BandMetaV0, BandMetaV1, ... BandMetaH0, BandMetaH1, ...] [CurveIdx0, CurveIdx1, ...] [CurveIdx0, CurveIdx1, ...] ...
-  std::vector<uint32_t> bandSplitData;
-
-  std::unordered_map<int, size_t> codepointToCurveOffset;
-  std::unordered_map<int, size_t> codepointToBandSplitOffset;
-
-  struct PackedCurve {
-    float    x0, y0, x1, y1, x2, y2;
-    uint32_t _padding[2];
-  } __attribute__((packed));
-
-  struct PackedBandMeta {
-    uint32_t dataOffset;
-    uint32_t nCurves;
-  } __attribute__((packed));
-
-  struct PackedBandMetaArray {
-    PackedBandMeta vertical[kBandSplits];
-    PackedBandMeta horizontal[kBandSplits];
-  } __attribute__((packed));
-
-  void PackGlyph(const Glyph& glyph) {
-    size_t curveDataOffset                  = curveData.size() / sizeof(PackedCurve);
-    codepointToCurveOffset[glyph.codepoint] = curveDataOffset;
-
-    for (const auto& curve: glyph.curves) {
-      PackedCurve packedCurve;
-      packedCurve.x0          = curve.from.x;
-      packedCurve.y0          = curve.from.y;
-      packedCurve.x1          = curve.control.x;
-      packedCurve.y1          = curve.control.y;
-      packedCurve.x2          = curve.to.x;
-      packedCurve.y2          = curve.to.y;
-      packedCurve._padding[0] = 0xDEADBEEF;
-      packedCurve._padding[1] = 0xDEADBEEF;
-
-      curveData.insert(
-        curveData.end(),
-        reinterpret_cast<uint8_t*>(&packedCurve),
-        reinterpret_cast<uint8_t*>(&packedCurve) + sizeof(PackedCurve));
-    }
-
-    size_t bandSplitDataOffset                  = bandSplitData.size();
-    codepointToBandSplitOffset[glyph.codepoint] = bandSplitDataOffset;
-
-    PackedBandMetaArray   bandMetaArray;
-    std::vector<uint32_t> curveIndices;
-    uint32_t              metaSizeUnits = sizeof(PackedBandMetaArray) / sizeof(uint32_t);
-
-    for (int i = 0; i < kBandSplits; ++i) {
-      bandMetaArray.vertical[i].nCurves    = glyph.bandV[i].curveIndices.size();
-      bandMetaArray.vertical[i].dataOffset = metaSizeUnits + (uint32_t) curveIndices.size();
-      for (int idx: glyph.bandV[i].curveIndices) curveIndices.push_back(idx);
-    }
-
-    for (int i = 0; i < kBandSplits; ++i) {
-      bandMetaArray.horizontal[i].nCurves    = glyph.bandH[i].curveIndices.size();
-      bandMetaArray.horizontal[i].dataOffset = metaSizeUnits + (uint32_t) curveIndices.size();
-      for (int idx: glyph.bandH[i].curveIndices) curveIndices.push_back(idx);
-    }
-
-    uint32_t* metaPtr = reinterpret_cast<uint32_t*>(&bandMetaArray);
-    bandSplitData.insert(bandSplitData.end(), metaPtr, metaPtr + metaSizeUnits);
-    bandSplitData.insert(bandSplitData.end(), curveIndices.begin(), curveIndices.end());
-  }
-
-  void PackGlyphs(const std::vector<Glyph>& glyphs) {
-    for (const auto& glyph: glyphs) {
-      PackGlyph(glyph);
-    }
-  }
-};
-
-#include <external/glad.h>
-
 struct SlugFont {
+  struct BCurve {
+    Vector2 from;
+    Vector2 control;
+    Vector2 to;
+  };
+
+  struct Band {
+    std::vector<int> curveIndices;
+
+    void SortIndicesBasedOnMaxPos(const std::vector<BCurve>& curves, const bool vertical) {
+      std::sort(curveIndices.begin(), curveIndices.end(), [&](const int a, const int b) {
+        const auto& cA = curves[a];
+        const auto& cB = curves[b];
+
+        float maxA =
+          vertical
+            ? std::max({cA.from.y, cA.control.y, cA.to.y})
+            : std::max({cA.from.x, cA.control.x, cA.to.x});
+        float maxB =
+          vertical
+            ? std::max({cB.from.y, cB.control.y, cB.to.y})
+            : std::max({cB.from.x, cB.control.x, cB.to.x});
+
+        return maxA > maxB;
+      });
+    }
+
+    Band() = default;
+
+    Band(std::vector<BCurve>& curves, bool vertical, float minB, float maxB) {
+      for (int i = 0; i < (int) curves.size(); ++i) {
+        const auto& c = curves[i];
+
+        float cMin =
+          vertical
+            ? std::min({c.from.x, c.control.x, c.to.x})
+            : std::min({c.from.y, c.control.y, c.to.y});
+        float cMax =
+          vertical
+            ? std::max({c.from.x, c.control.x, c.to.x})
+            : std::max({c.from.y, c.control.y, c.to.y});
+
+        if (cMax >= minB && cMin <= maxB) {
+          curveIndices.push_back(i);
+        }
+      }
+      SortIndicesBasedOnMaxPos(curves, vertical);
+    }
+  };
+
+  struct Glyph {
+    int                 codepoint;
+    Rectangle           bounds;
+    std::vector<BCurve> curves;
+    int                 advanceWidth;
+    int                 leftSideBearing;
+
+    std::array<Band, kBandSplits> bandV;
+    std::array<Band, kBandSplits> bandH;
+
+    float bandOffsetV, bandScaleV;
+    float bandOffsetH, bandScaleH;
+
+    Glyph(stbtt_fontinfo& fontInfo, const int codepoint) {
+      this->codepoint = codepoint;
+
+      stbtt_GetCodepointHMetrics(&fontInfo, codepoint, &advanceWidth, &leftSideBearing);
+
+      int x0, y0, x1, y1;
+      stbtt_GetCodepointBox(&fontInfo, codepoint, &x0, &y0, &x1, &y1);
+      bounds = {
+        static_cast<float>(x0),
+        static_cast<float>(y0),
+        static_cast<float>(x1 - x0),
+        static_cast<float>(y1 - y0),
+      };
+
+      stbtt_vertex* vertices;
+
+      int nCurves = 0;
+      nCurves     = stbtt_GetCodepointShape(&fontInfo, codepoint, &vertices);
+
+      int lastX = 0;
+      int lastY = 0;
+      for (int i = 0; i < nCurves; ++i) {
+        const auto& v = vertices[i];
+
+        if (v.type == STBTT_vmove) {
+          lastX = v.x;
+          lastY = v.y;
+        } else if (v.type == STBTT_vline) {
+          BCurve curve;
+          curve.from    = {static_cast<float>(lastX), static_cast<float>(lastY)};
+          curve.control = {static_cast<float>(v.x + lastX) / 2.0f, static_cast<float>(v.y + lastY) / 2.0f};
+          curve.to      = {static_cast<float>(v.x), static_cast<float>(v.y)};
+
+          lastX = v.x;
+          lastY = v.y;
+
+          curves.push_back(curve);
+          //TraceLog(LOG_INFO, "Line Curve: From (%.2f, %.2f) To (%.2f, %.2f)", curve.from.x, curve.from.y, curve.to.x, curve.to.y);
+        } else if (v.type == STBTT_vcurve) {
+          BCurve curve;
+          curve.from    = {static_cast<float>(lastX), static_cast<float>(lastY)};
+          curve.control = {static_cast<float>(v.cx), static_cast<float>(v.cy)};
+          curve.to      = {static_cast<float>(v.x), static_cast<float>(v.y)};
+
+          lastX = v.x;
+          lastY = v.y;
+
+          curves.push_back(curve);
+          //TraceLog(LOG_INFO, "Bezier Curve: From (%.2f, %.2f) Control (%.2f, %.2f) To (%.2f, %.2f)", curve.from.x, curve.from.y, curve.control.x, curve.control.y, curve.to.x, curve.to.y);
+        }
+      }
+
+      bandScaleV  = (float) kBandSplits / bounds.width;
+      bandOffsetV = -bounds.x * bandScaleV;
+
+      bandScaleH  = (float) kBandSplits / bounds.height;
+      bandOffsetH = -bounds.y * bandScaleH;
+
+      for (int i = 0; i < kBandSplits; ++i) {
+        float xMin = bounds.x + (bounds.width * i) / (float) kBandSplits;
+        float xMax = bounds.x + (bounds.width * (i + 1)) / (float) kBandSplits;
+        bandV[i]   = Band(curves, true, xMin, xMax);
+
+        float yMin = bounds.y + (bounds.height * i) / (float) kBandSplits;
+        float yMax = bounds.y + (bounds.height * (i + 1)) / (float) kBandSplits;
+        bandH[i]   = Band(curves, false, yMin, yMax);
+      }
+
+      stbtt_FreeShape(&fontInfo, vertices);
+    }
+  };
+
+  static Vector2 CvtCoordToScreen(const Vector2 coord) {
+    return {coord.x, -coord.y + kWindowHeight};
+  }
+
+  struct PackedGlyphData {
+    // [GlyphMeta, Curve0, Curve1, ...] [GlyphMeta, Curve0, Curve1, ...] ...
+    std::vector<uint8_t> curveData;
+    // [BandMetaV0, BandMetaV1, ... BandMetaH0, BandMetaH1, ...] [CurveIdx0, CurveIdx1, ...] [CurveIdx0, CurveIdx1, ...] ...
+    std::vector<uint32_t> bandSplitData;
+
+    std::unordered_map<int, size_t> codepointToCurveOffset;
+    std::unordered_map<int, size_t> codepointToBandSplitOffset;
+
+    struct PackedCurve {
+      float    x0, y0, x1, y1, x2, y2;
+      uint32_t _padding[2];
+    } __attribute__((packed));
+
+    struct PackedBandMeta {
+      uint32_t dataOffset;
+      uint32_t nCurves;
+    } __attribute__((packed));
+
+    struct PackedBandMetaArray {
+      PackedBandMeta vertical[kBandSplits];
+      PackedBandMeta horizontal[kBandSplits];
+    } __attribute__((packed));
+
+    void PackGlyph(const Glyph& glyph) {
+      size_t curveDataOffset                  = curveData.size() / sizeof(PackedCurve);
+      codepointToCurveOffset[glyph.codepoint] = curveDataOffset;
+
+      for (const auto& curve: glyph.curves) {
+        PackedCurve packedCurve;
+        packedCurve.x0          = curve.from.x;
+        packedCurve.y0          = curve.from.y;
+        packedCurve.x1          = curve.control.x;
+        packedCurve.y1          = curve.control.y;
+        packedCurve.x2          = curve.to.x;
+        packedCurve.y2          = curve.to.y;
+        packedCurve._padding[0] = 0xDEADBEEF;
+        packedCurve._padding[1] = 0xDEADBEEF;
+
+        curveData.insert(
+          curveData.end(),
+          reinterpret_cast<uint8_t*>(&packedCurve),
+          reinterpret_cast<uint8_t*>(&packedCurve) + sizeof(PackedCurve));
+      }
+
+      size_t bandSplitDataOffset                  = bandSplitData.size();
+      codepointToBandSplitOffset[glyph.codepoint] = bandSplitDataOffset;
+
+      PackedBandMetaArray   bandMetaArray;
+      std::vector<uint32_t> curveIndices;
+      uint32_t              metaSizeUnits = sizeof(PackedBandMetaArray) / sizeof(uint32_t);
+
+      for (int i = 0; i < kBandSplits; ++i) {
+        bandMetaArray.vertical[i].nCurves    = glyph.bandV[i].curveIndices.size();
+        bandMetaArray.vertical[i].dataOffset = metaSizeUnits + (uint32_t) curveIndices.size();
+        for (int idx: glyph.bandV[i].curveIndices) curveIndices.push_back(idx);
+      }
+
+      for (int i = 0; i < kBandSplits; ++i) {
+        bandMetaArray.horizontal[i].nCurves    = glyph.bandH[i].curveIndices.size();
+        bandMetaArray.horizontal[i].dataOffset = metaSizeUnits + (uint32_t) curveIndices.size();
+        for (int idx: glyph.bandH[i].curveIndices) curveIndices.push_back(idx);
+      }
+
+      uint32_t* metaPtr = reinterpret_cast<uint32_t*>(&bandMetaArray);
+      bandSplitData.insert(bandSplitData.end(), metaPtr, metaPtr + metaSizeUnits);
+      bandSplitData.insert(bandSplitData.end(), curveIndices.begin(), curveIndices.end());
+    }
+
+    void PackGlyphs(const std::vector<Glyph>& glyphs) {
+      for (const auto& glyph: glyphs) {
+        PackGlyph(glyph);
+      }
+    }
+  };
+
   std::vector<Glyph>           glyphs;
   std::unordered_map<int, int> codepointToGlyphIndex;
 
-  PackedGlyphData packedData;
-  stbtt_fontinfo  fontInfo;
-  int             ascent;
-  int             descent;
-  int             lineGap;
+  PackedGlyphData            packedData;
+  std::unique_ptr<uint8_t[]> fontData;
+  stbtt_fontinfo             fontInfo;
+  int                        ascent;
+  int                        descent;
+  int                        lineGap;
 
   struct SlugVertex {
     float pos[4];// xy: pos, zw: normal
@@ -354,8 +378,10 @@ struct SlugFont {
 
   RenderResources resources;
 
-  SlugFont(stbtt_fontinfo& fontInfo, const int* codepoints, const int nCodepoints) {
-    this->fontInfo = fontInfo;
+  // takes fontData ownership
+  SlugFont(std::unique_ptr<uint8_t[]>&& fontData, const int* codepoints, const int nCodepoints) {
+    this->fontData = std::move(fontData);
+    stbtt_InitFont(&this->fontInfo, this->fontData.get(), 0);
     stbtt_GetFontVMetrics(&this->fontInfo, &ascent, &descent, &lineGap);
 
     for (int i = 0; i < nCodepoints; ++i) {
@@ -470,7 +496,7 @@ struct SlugFont {
   }
 };
 
-void RenderSlugChar(SlugFont& slugFont, int codepoint, Vector2 position, Vector2 scale) {
+void DrawCodepointSlug(SlugFont& slugFont, int codepoint, Vector2 position, Vector2 scale) {
   rlPushMatrix();
   rlTranslatef(position.x, position.y, 0.0f);
   rlScalef(scale.x, scale.y, 1.0f);
@@ -478,50 +504,62 @@ void RenderSlugChar(SlugFont& slugFont, int codepoint, Vector2 position, Vector2
   rlPopMatrix();
 }
 
-int main(int, char**) {
+void DrawCodepointsSlug(SlugFont& slugFont, const int* codepoints, int nCodepoints, Vector2 position, Vector2 scale = {0.05f, 0.05f}) {
+  // todo: this scale is very suboptimal. should calculate based on font size and desired pixel height
+  float startX   = 100.0f;
+  float startY   = 100.0f;
+  float penX     = startX;
+  float baseline = startY + slugFont.GetAscent() * scale.y;
+
+  for (int i = 0; i < nCodepoints; ++i) {
+    if (codepoints[i] == '\n') {
+      penX = startX;
+      baseline += slugFont.GetLineAdvance() * scale.y;
+      continue;
+    }
+
+    int codepoint     = codepoints[i];
+    int nextCodepoint = (i + 1 < nCodepoints && codepoints[i + 1] != '\n') ? codepoints[i + 1] : 0;
+
+    DrawCodepointSlug(slugFont, codepoint, {penX, baseline}, scale);
+    penX += slugFont.GetAdvance(codepoint, nextCodepoint) * scale.x;
+  }
+}
+
+int main(int argc, char** argv) {
+  char* sampleText;
+  bool  fromFile = false;
+  if (argc > 1) {
+    sampleText = LoadFileText(argv[1]);
+    fromFile   = true;
+  } else {
+    sampleText = const_cast<char*>(TEST_STR);
+  }
+
   int fontFileSize = 0;
   int nCodepoints  = 0;
 
-  auto* fontData   = LoadFileData(FONT_FILENAME, &fontFileSize);
-  auto* codepoints = LoadCodepoints(TEST_STR, &nCodepoints);
+  auto* fontDataUnmanaged = LoadFileData(FONT_FILENAME, &fontFileSize);
+  auto* codepoints        = LoadCodepoints(sampleText, &nCodepoints);
+
+  auto fontData = std::make_unique<uint8_t[]>(fontFileSize);
+  memcpy(fontData.get(), fontDataUnmanaged, fontFileSize);
+  UnloadFileData(fontDataUnmanaged);
 
   std::set<int>    uniqueCodepoints(codepoints, codepoints + nCodepoints);
   std::vector<int> uniqueCodepointVec(uniqueCodepoints.begin(), uniqueCodepoints.end());
 
-  stbtt_fontinfo fontInfo;
-  stbtt_InitFont(
-    &fontInfo, fontData,
-    stbtt_GetFontOffsetForIndex(fontData, 0));
-
   InitWindow(kWindowWidth, kWindowHeight, kWindowTitle);
   SetTargetFPS(60);
 
-  SlugFont slugFont(fontInfo, uniqueCodepointVec.data(), (int) uniqueCodepointVec.size());
+  SlugFont slugFont(std::move(fontData), uniqueCodepointVec.data(), (int) uniqueCodepointVec.size());
 
   while (!WindowShouldClose()) {
     BeginDrawing();
     BeginBlendMode(BLEND_ALPHA);
     ClearBackground(BLACK);
 
-    Vector2 scale    = {0.05f, 0.05f};
-    float   startX   = 100.0f;
-    float   startY   = 100.0f;
-    float   penX     = startX;
-    float   baseline = startY + slugFont.GetAscent() * scale.y;
-
-    for (int i = 0; i < nCodepoints; ++i) {
-      if (codepoints[i] == '\n') {
-        penX = startX;
-        baseline += slugFont.GetLineAdvance() * scale.y;
-        continue;
-      }
-
-      int codepoint     = codepoints[i];
-      int nextCodepoint = (i + 1 < nCodepoints && codepoints[i + 1] != '\n') ? codepoints[i + 1] : 0;
-
-      RenderSlugChar(slugFont, codepoint, {penX, baseline}, scale);
-      penX += slugFont.GetAdvance(codepoint, nextCodepoint) * scale.x;
-    }
+    DrawCodepointsSlug(slugFont, codepoints, nCodepoints, {100.0f, 100.0f}, {0.036f, 0.036f});
 
     EndBlendMode();
     EndDrawing();
@@ -530,7 +568,8 @@ int main(int, char**) {
   CloseWindow();
 
   UnloadCodepoints(codepoints);
-  UnloadFileData(fontData);
+
+  if (fromFile) UnloadFileText(sampleText);
 
   return 0;
 }
