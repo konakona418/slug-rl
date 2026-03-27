@@ -1,5 +1,7 @@
 #version 430
 
+#define kBandSplits 16u
+
 in vec2       v_texcoord;
 flat in vec4  v_banding;
 flat in ivec4 v_glyph;
@@ -65,13 +67,12 @@ float CalcCoverage(float xcov, float ycov, float xwgt, float ywgt, int flags) {
 
 void main() {
   vec2  pixelsPerEm = 1.0 / fwidth(v_texcoord);
-  ivec2 bandMax     = v_glyph.zw;
-  bandMax.y &= 0x00FF;
+  ivec2 bandMax     = ivec2(v_glyph.z & 0x00FF, (v_glyph.z >> 8) & 0x00FF);
 
   ivec2 bandIndex = clamp(ivec2(v_texcoord * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
   uint  glyphBase = uint(v_glyph.x);// glyph band data offset
 
-  /*uint hMetaIdx    = glyphBase + (16u + uint(bandIndex.y)) * 2u;
+  uint hMetaIdx    = glyphBase + (kBandSplits + uint(bandIndex.y)) * 2u;
   uint hCount      = rawData[hMetaIdx + 1u];
   uint hDataOffset = glyphBase + rawData[hMetaIdx];
 
@@ -96,7 +97,7 @@ void main() {
         xwgt = max(xwgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
       }
     }
-  }*/
+  }
 
   uint vMetaIdx    = glyphBase + uint(bandIndex.x) * 2u;
   uint vCount      = rawData[vMetaIdx + 1u];
@@ -125,7 +126,5 @@ void main() {
     }
   }
 
-  // fragColor = v_color * CalcCoverage(xcov, ycov, xwgt, ywgt, v_glyph.w);
-  // todo: something wrong with horizontal coverage, need to debug
-  fragColor = v_color * ycov;
+  fragColor = v_color * CalcCoverage(xcov, ycov, xwgt, ywgt, v_glyph.w);
 }
