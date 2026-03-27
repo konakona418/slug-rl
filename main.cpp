@@ -22,7 +22,6 @@
   "——是有人偷了他們罷：那是誰？又藏在何處呢？\n"                \
   "是他們自己逃走了罷：現在又到了那裏呢？"
 
-// todo: glyph positioning (bearing, advance, etc.)
 // seems that characters like dash '-' and '一' are not rendered correctly,
 // perhaps because they are very small?
 
@@ -86,6 +85,8 @@ struct Glyph {
   int                 codepoint;
   Rectangle           bounds;
   std::vector<BCurve> curves;
+  int                 advanceWidth;
+  int                 leftSideBearing;
 
   std::array<Band, kBandSplits> bandV;
   std::array<Band, kBandSplits> bandH;
@@ -95,6 +96,8 @@ struct Glyph {
 
   Glyph(stbtt_fontinfo& fontInfo, const int codepoint) {
     this->codepoint = codepoint;
+
+    stbtt_GetCodepointHMetrics(&fontInfo, codepoint, &advanceWidth, &leftSideBearing);
 
     int x0, y0, x1, y1;
     stbtt_GetCodepointBox(&fontInfo, codepoint, &x0, &y0, &x1, &y1);
@@ -251,6 +254,10 @@ struct SlugFont {
   std::unordered_map<int, int> codepointToGlyphIndex;
 
   PackedGlyphData packedData;
+  stbtt_fontinfo  fontInfo;
+  int             ascent;
+  int             descent;
+  int             lineGap;
 
   struct SlugVertex {
     float pos[4];// xy: pos, zw: normal
@@ -348,6 +355,9 @@ struct SlugFont {
   RenderResources resources;
 
   SlugFont(stbtt_fontinfo& fontInfo, const int* codepoints, const int nCodepoints) {
+    this->fontInfo = fontInfo;
+    stbtt_GetFontVMetrics(&this->fontInfo, &ascent, &descent, &lineGap);
+
     for (int i = 0; i < nCodepoints; ++i) {
       const int codepoint = codepoints[i];
       Glyph     glyph(fontInfo, codepoint);
@@ -376,33 +386,35 @@ struct SlugFont {
     // quads
     float width  = glyph.bounds.width;
     float height = glyph.bounds.height;
+    float x      = position.x + glyph.bounds.x;
+    float y      = position.y - glyph.bounds.y - glyph.bounds.height;
 
     // todo: calculate actual Jacobian based on curve complexity for better AA quality
     float invJac = 1.0f;
 
     SlugVertex vertices[4] = {
       SlugVertex::Create(
-        position.x, position.y, -1, -1,
+        x, y, -1, -1,
         glyph.bounds.x, height,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, invJac,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
       SlugVertex::Create(
-        position.x + width, position.y,
+        x + width, y,
         1, -1,
         glyph.bounds.x + width, height,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, invJac,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
       SlugVertex::Create(
-        position.x + width, position.y + height,
+        x + width, y + height,
         1, 1,
         glyph.bounds.x + width, glyph.bounds.y,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, invJac,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
       SlugVertex::Create(
-        position.x, position.y + height,
+        x, y + height,
         -1, 1,
         glyph.bounds.x, glyph.bounds.y,
         curveOffset, bandOffset,
@@ -439,6 +451,23 @@ struct SlugFont {
 
     rlDisableShader();
   }
+
+  float GetAscent() const {
+    return (float) ascent;
+  }
+
+  float GetLineAdvance() const {
+    return (float) (ascent - descent + lineGap);
+  }
+
+  float GetAdvance(int codepoint, int nextCodepoint) const {
+    auto it = codepointToGlyphIndex.find(codepoint);
+    if (it == codepointToGlyphIndex.end()) return 0.0f;
+
+    const Glyph& glyph = glyphs[it->second];
+    int          kern  = nextCodepoint != 0 ? stbtt_GetCodepointKernAdvance(&fontInfo, codepoint, nextCodepoint) : 0;
+    return (float) (glyph.advanceWidth + kern);
+  }
 };
 
 void RenderSlugChar(SlugFont& slugFont, int codepoint, Vector2 position, Vector2 scale) {
@@ -474,17 +503,24 @@ int main(int, char**) {
     BeginBlendMode(BLEND_ALPHA);
     ClearBackground(BLACK);
 
-    Vector2 position = {100.0f, 300.0f};
     Vector2 scale    = {0.05f, 0.05f};
+    float   startX   = 100.0f;
+    float   startY   = 100.0f;
+    float   penX     = startX;
+    float   baseline = startY + slugFont.GetAscent() * scale.y;
+
     for (int i = 0; i < nCodepoints; ++i) {
       if (codepoints[i] == '\n') {
-        position.x = 100.0f;
-        position.y += 50.0f;
+        penX = startX;
+        baseline += slugFont.GetLineAdvance() * scale.y;
         continue;
       }
-      int codepoint = codepoints[i];
-      RenderSlugChar(slugFont, codepoint, position, scale);
-      position.x += 50.0f;
+
+      int codepoint     = codepoints[i];
+      int nextCodepoint = (i + 1 < nCodepoints && codepoints[i + 1] != '\n') ? codepoints[i + 1] : 0;
+
+      RenderSlugChar(slugFont, codepoint, {penX, baseline}, scale);
+      penX += slugFont.GetAdvance(codepoint, nextCodepoint) * scale.x;
     }
 
     EndBlendMode();
