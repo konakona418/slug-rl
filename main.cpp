@@ -30,6 +30,47 @@ static const char kWindowTitle[] = "Slug Text Rendering";
 static const int  kWindowWidth   = 1280;
 static const int  kWindowHeight  = 720;
 
+static constexpr float kMinViewScale  = 0.1f;
+static constexpr float kMaxViewScale  = 16.0f;
+static constexpr float kZoomStep      = 1.1f;
+static constexpr int   kBloomLevels   = 4;
+static constexpr float kBloomStrength = 0.8f;
+
+static const char kBloomDownsampleShader[] =
+  "#version 430 core\n"
+  "in vec2 fragTexCoord;\n"
+  "in vec4 fragColor;\n"
+  "uniform sampler2D texture0;\n"
+  "uniform vec4 colDiffuse;\n"
+  "uniform vec2 texelSize;\n"
+  "out vec4 finalColor;\n"
+  "void main()\n"
+  "{\n"
+  "    vec3 sum = vec3(0.0);\n"
+  "    for (int x = -1; x <= 1; x++)\n"
+  "    {\n"
+  "        for (int y = -1; y <= 1; y++)\n"
+  "        {\n"
+  "            sum += texture(texture0, fragTexCoord + vec2(x, y) * texelSize).rgb;\n"
+  "        }\n"
+  "    }\n"
+  "    vec3 blurred = sum / 9.0;\n"
+  "    finalColor = vec4(blurred, 1.0) * colDiffuse;\n"
+  "}\n";
+
+static const char kBloomUpsampleShader[] =
+  "#version 430 core\n"
+  "in vec2 fragTexCoord;\n"
+  "in vec4 fragColor;\n"
+  "uniform sampler2D texture0;\n"
+  "uniform vec4 colDiffuse;\n"
+  "out vec4 finalColor;\n"
+  "void main()\n"
+  "{\n"
+  "    vec4 color = texture(texture0, fragTexCoord);\n"
+  "    finalColor = color * colDiffuse;\n"
+  "}\n";
+
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -38,9 +79,57 @@ static const int  kWindowHeight  = 720;
 
 #include "slug.h"
 
-static constexpr float kMinViewScale = 0.1f;
-static constexpr float kMaxViewScale = 16.0f;
-static constexpr float kZoomStep     = 1.1f;
+static void RenderBloomPass(
+  RenderTexture2D& renderTexture,
+  RenderTexture2D* bloomTextures,
+  const int*       bloomWidths,
+  const int*       bloomHeights,
+  int              bloomLevels,
+  Shader           downsampleShader,
+  Shader           upsampleShader,
+  int              downsampleTexelLoc) {
+  Texture2D sourceTexture = renderTexture.texture;
+  int       sourceWidth   = renderTexture.texture.width;
+  int       sourceHeight  = renderTexture.texture.height;
+
+  for (int i = 0; i < bloomLevels; ++i) {
+    BeginTextureMode(bloomTextures[i]);
+    {
+      BeginShaderMode(downsampleShader);
+      Vector2 texelSize = {1.0f / (float) sourceWidth, 1.0f / (float) sourceHeight};
+      SetShaderValue(downsampleShader, downsampleTexelLoc, &texelSize, SHADER_UNIFORM_VEC2);
+      DrawTexturePro(
+        sourceTexture,
+        Rectangle{0.0f, 0.0f, (float) sourceWidth, (float) -sourceHeight},
+        Rectangle{0.0f, 0.0f, (float) bloomWidths[i], (float) bloomHeights[i]},
+        Vector2{0.0f, 0.0f},
+        0.0f,
+        WHITE);
+      EndShaderMode();
+    }
+    EndTextureMode();
+
+    sourceTexture = bloomTextures[i].texture;
+    sourceWidth   = bloomWidths[i];
+    sourceHeight  = bloomHeights[i];
+  }
+
+  for (int i = bloomLevels - 2; i >= 0; --i) {
+    BeginTextureMode(bloomTextures[i]);
+    BeginBlendMode(BLEND_ADDITIVE);
+    BeginShaderMode(upsampleShader);
+    DrawTexturePro(
+      bloomTextures[i + 1].texture,
+      Rectangle{0.0f, 0.0f, (float) bloomWidths[i + 1], (float) -bloomHeights[i + 1]},
+      Rectangle{0.0f, 0.0f, (float) bloomWidths[i], (float) bloomHeights[i]},
+      Vector2{0.0f, 0.0f},
+      0.0f,
+      WHITE);
+    EndShaderMode();
+    EndBlendMode();
+    EndTextureMode();
+  }
+}
 
 int main(int argc, char** argv) {
   char*             sampleText;
@@ -90,18 +179,35 @@ int main(int argc, char** argv) {
     uniqueCodepointVec.data(),
     (int) uniqueCodepointVec.size());
 
+  auto downsampleShader   = LoadShaderFromMemory(nullptr, kBloomDownsampleShader);
+  auto upsampleShader     = LoadShaderFromMemory(nullptr, kBloomUpsampleShader);
+  int  downsampleTexelLoc = GetShaderLocation(downsampleShader, "texelSize");
+
+  auto renderTexture = LoadRenderTexture(kWindowWidth, kWindowHeight);
+  SetTextureFilter(renderTexture.texture, TEXTURE_FILTER_BILINEAR);
+
+  RenderTexture2D bloomTextures[kBloomLevels];
+  int             bloomWidths[kBloomLevels];
+  int             bloomHeights[kBloomLevels];
+  int             currentWidth  = kWindowWidth;
+  int             currentHeight = kWindowHeight;
+  for (int i = 0; i < kBloomLevels; ++i) {
+    currentWidth     = std::max(1, currentWidth / 2);
+    currentHeight    = std::max(1, currentHeight / 2);
+    bloomWidths[i]   = currentWidth;
+    bloomHeights[i]  = currentHeight;
+    bloomTextures[i] = LoadRenderTexture(currentWidth, currentHeight);
+    SetTextureFilter(bloomTextures[i].texture, TEXTURE_FILTER_BILINEAR);
+  }
+
   float   viewScale    = 1.0f;
   Vector2 viewOffset   = {0.0f, 0.0f};
   bool    isPanning    = false;
   Vector2 lastMousePos = {0.0f, 0.0f};
 
+  bool fancyVFX = true;
+
   while (!WindowShouldClose()) {
-    DrawText("Mouse Wheel: Zoom | Middle Mouse Button: Pan | 0: Reset View", 10, kWindowHeight - 60, 20, YELLOW);
-
-    std::stringstream ss;
-    ss << "View Scale: " << viewScale << " | View Offset: (" << viewOffset.x << ", " << viewOffset.y << ")";
-    DrawText(ss.str().c_str(), 10, kWindowHeight - 30, 20, YELLOW);
-
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
       Vector2 mousePos  = GetMousePosition();
@@ -144,27 +250,81 @@ int main(int argc, char** argv) {
       viewOffset = {0.0f, 0.0f};
     }
 
-    BeginDrawing();
-    BeginBlendMode(BLEND_ALPHA);
-    ClearBackground(BLACK);
-
-    rlPushMatrix();
-    rlTranslatef(viewOffset.x, viewOffset.y, 0.0f);
-    rlScalef(viewScale, viewScale, 1.0f);
-
-    if (fromFile) {
-      DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 64.0f, 0, WHITE);
-    } else {
-      DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 28.0f, 0, Color{255, 255, 0, 255});
-      DrawTextCodepointsSlug(slugFontJa, codepointSections[1], sectionCounts[1], {25.0f, 200.0f}, 28.0f, 0, Color{0, 255, 255, 255});
-      DrawTextCodepointsSlug(slugFontZh, codepointSections[2], sectionCounts[2], {25.0f, 400.0f}, 28.0f, 0, Color{255, 182, 193, 255});
+    if (IsKeyPressed(KEY_SPACE)) {
+      fancyVFX = !fancyVFX;
     }
 
-    rlPopMatrix();
+    BeginTextureMode(renderTexture);
+    {
+      BeginBlendMode(BLEND_ALPHA);
+      ClearBackground(BLACK);
 
-    EndBlendMode();
+      rlPushMatrix();
+      rlTranslatef(viewOffset.x, viewOffset.y, 0.0f);
+      rlScalef(viewScale, viewScale, 1.0f);
+
+      if (fromFile) {
+        DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 64.0f, 0, WHITE);
+      } else {
+        DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 28.0f, 0, Color{255, 255, 0, 255});
+        DrawTextCodepointsSlug(slugFontJa, codepointSections[1], sectionCounts[1], {25.0f, 200.0f}, 28.0f, 0, Color{0, 255, 255, 255});
+        DrawTextCodepointsSlug(slugFontZh, codepointSections[2], sectionCounts[2], {25.0f, 400.0f}, 28.0f, 0, Color{255, 182, 193, 255});
+      }
+      rlPopMatrix();
+
+      EndBlendMode();
+    }
+    EndTextureMode();
+
+    if (fancyVFX) {
+      RenderBloomPass(
+        renderTexture,
+        bloomTextures,
+        bloomWidths,
+        bloomHeights,
+        kBloomLevels,
+        downsampleShader,
+        upsampleShader,
+        downsampleTexelLoc);
+    }
+
+    BeginDrawing();
+    {
+      ClearBackground(BLACK);
+
+      DrawTextureRec(
+        renderTexture.texture,
+        Rectangle{0.0f, 0.0f, (float) renderTexture.texture.width, (float) -renderTexture.texture.height},
+        Vector2{0.0f, 0.0f},
+        WHITE);
+
+      if (fancyVFX) {
+        BeginBlendMode(BLEND_ADDITIVE);
+        DrawTexturePro(
+          bloomTextures[0].texture,
+          Rectangle{0.0f, 0.0f, (float) bloomWidths[0], (float) -bloomHeights[0]},
+          Rectangle{0.0f, 0.0f, (float) kWindowWidth, (float) kWindowHeight},
+          Vector2{0.0f, 0.0f},
+          0.f,
+          Color{255, 255, 255, (unsigned char) (255.0f * kBloomStrength)});
+        EndBlendMode();
+      }
+
+      DrawText("Mouse Wheel: Zoom | Middle Mouse Button: Pan | 0: Reset View | Space: Toggle VFX", 10, kWindowHeight - 60, 20, YELLOW);
+
+      std::stringstream ss;
+      ss << "View Scale: " << viewScale << " | View Offset: (" << viewOffset.x << ", " << viewOffset.y << ")";
+      DrawText(ss.str().c_str(), 10, kWindowHeight - 30, 20, YELLOW);
+    }
     EndDrawing();
   }
+
+  UnloadRenderTexture(renderTexture);
+  for (int i = 0; i < kBloomLevels; ++i) {
+    UnloadRenderTexture(bloomTextures[i]);
+  }
+  UnloadShader(downsampleShader);
+  UnloadShader(upsampleShader);
 
   UnloadFontSlug(slugFontJa);
   UnloadFontSlug(slugFontZh);
