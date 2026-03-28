@@ -123,9 +123,11 @@ struct SlugFont {
           lastX = v.x;
           lastY = v.y;
         } else if (v.type == STBTT_vline) {
+          // treat lines as a quadratic bezier with control point = from point
+          // don't use center point as control point. causes random artifacts
           BCurve curve;
           curve.from    = {static_cast<float>(lastX), static_cast<float>(lastY)};
-          curve.control = {static_cast<float>(v.x + lastX) / 2.0f, static_cast<float>(v.y + lastY) / 2.0f};
+          curve.control = {static_cast<float>(lastX), static_cast<float>(lastY)};
           curve.to      = {static_cast<float>(v.x), static_cast<float>(v.y)};
 
           lastX = v.x;
