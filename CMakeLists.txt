@@ -10,4 +10,3 @@ add_subdirectory(vendors/raylib)
 add_executable(slug main.cpp)
 
 target_link_libraries(slug raylib)
-target_include_directories(slug PRIVATE vendors/stb)

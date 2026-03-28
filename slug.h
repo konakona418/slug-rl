@@ -17,9 +17,11 @@
 // abstraction leak!
 #include <external/glad.h>
 
+// raylib seems to embed stbttf but doesn't expose,
+// so just instantiate implementation here
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
-#include <stb_truetype.h>
+#include <external/stb_truetype.h>
 
 #include <algorithm>
 #include <array>
@@ -274,7 +276,7 @@ struct SlugFont {
       std::array<float, 4> inverseJacobian,
 
       std::array<float, 4> bandParams,
-      float r = 1.0f, float g = 1.0f, float b = 1.0f, float a = 1.0f) {
+      Color                tint) {
       SlugVertex vert;
 
       vert.pos[0] = x;
@@ -302,10 +304,10 @@ struct SlugFont {
       vert.bnd[2] = bandParams[2];
       vert.bnd[3] = bandParams[3];
 
-      vert.col[0] = r;
-      vert.col[1] = g;
-      vert.col[2] = b;
-      vert.col[3] = a;
+      vert.col[0] = tint.r / 255.0f;
+      vert.col[1] = tint.g / 255.0f;
+      vert.col[2] = tint.b / 255.0f;
+      vert.col[3] = tint.a / 255.0f;
 
       return vert;
     }
@@ -401,7 +403,7 @@ struct SlugFont {
     rlUpdateShaderBuffer(resources.vertDataSSBO, vert, sizeof(SlugVertex) * 4, 0);
   }
 
-  void RenderChar(int codepoint, Vector2 position) {
+  void RenderChar(int codepoint, Vector2 position, Color tint) {
     uint32_t curveOffset = packedData.codepointToCurveOffset[codepoint];
     uint32_t bandOffset  = packedData.codepointToBandSplitOffset[codepoint];
 
@@ -429,28 +431,32 @@ struct SlugFont {
         glyph.bounds.x, glyph.bounds.y + height,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, inverseJacobian,
-        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
+        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
+        tint),
       SlugVertex::Create(
         x + width, y,
         1, -1,
         glyph.bounds.x + width, glyph.bounds.y + height,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, inverseJacobian,
-        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
+        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
+        tint),
       SlugVertex::Create(
         x + width, y + height,
         1, 1,
         glyph.bounds.x + width, glyph.bounds.y,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, inverseJacobian,
-        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
+        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
+        tint),
       SlugVertex::Create(
         x, y + height,
         -1, 1,
         glyph.bounds.x, glyph.bounds.y,
         curveOffset, bandOffset,
         kBandSplits - 1, kBandSplits - 1, inverseJacobian,
-        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH}),
+        {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
+        tint),
     };
 
     UploadVertexData(vertices);
@@ -501,35 +507,60 @@ struct SlugFont {
   }
 };
 
-inline void DrawCodepointSlug(SlugFont& slugFont, int codepoint, Vector2 position, Vector2 scale) {
+typedef SlugFont* PSlugFont;
+
+inline void DrawTextCodepointSlug_Impl(PSlugFont slugFont, int codepoint, Vector2 position, Vector2 scale, Color tint) {
   rlPushMatrix();
   rlTranslatef(position.x, position.y, 0.0f);
   rlScalef(scale.x, scale.y, 1.0f);
-  slugFont.RenderChar(codepoint, {0.0f, 0.0f});
+  slugFont->RenderChar(codepoint, {0.0f, 0.0f}, tint);
   rlPopMatrix();
 }
 
-inline void DrawCodepointsSlug(SlugFont& slugFont, const int* codepoints, int nCodepoints, Vector2 position, float pixelSize = 48.0f) {
-  float   lineHeight   = slugFont.GetLineAdvance();
-  float   uniformScale = lineHeight > 0.0f ? pixelSize / lineHeight : 1.0f;
+inline void DrawTextCodepointsSlug(PSlugFont slugFont, const int* codepoints, int nCodepoints, Vector2 position, float fontSize, float spacing, Color tint) {
+  float   lineHeight   = slugFont->GetLineAdvance();
+  float   uniformScale = lineHeight > 0.0f ? fontSize / lineHeight : 1.0f;
   Vector2 scale        = {uniformScale, uniformScale};
 
   float startX   = position.x;
   float startY   = position.y;
   float penX     = startX;
-  float baseline = startY + slugFont.GetAscent() * scale.y;
+  float baseline = startY + slugFont->GetAscent() * scale.y;
 
   for (int i = 0; i < nCodepoints; ++i) {
     if (codepoints[i] == '\n') {
       penX = startX;
-      baseline += slugFont.GetLineAdvance() * scale.y;
+      baseline += slugFont->GetLineAdvance() * scale.y;
       continue;
     }
 
     int codepoint     = codepoints[i];
     int nextCodepoint = (i + 1 < nCodepoints && codepoints[i + 1] != '\n') ? codepoints[i + 1] : 0;
 
-    DrawCodepointSlug(slugFont, codepoint, {penX, baseline}, scale);
-    penX += slugFont.GetAdvance(codepoint, nextCodepoint) * scale.x;
+    DrawTextCodepointSlug_Impl(slugFont, codepoint, {penX, baseline}, scale, tint);
+    penX += slugFont->GetAdvance(codepoint, nextCodepoint) * scale.x + spacing;
+  }
+}
+
+inline void DrawTextCodepointSlug(PSlugFont slugFont, int codepoint, Vector2 position, float fontSize, Color tint) {
+  DrawTextCodepointsSlug(slugFont, &codepoint, 1, position, fontSize, 0.0f, tint);
+}
+
+inline PSlugFont LoadFontSlug(const char* fontFileName, const int* codepoints, int nCodepoints) {
+  int   fontFileSize      = 0;
+  auto* fontDataUnmanaged = LoadFileData(fontFileName, &fontFileSize);
+
+  std::unique_ptr<uint8_t[]> fontData = std::make_unique<uint8_t[]>(fontFileSize);
+  memcpy(fontData.get(), fontDataUnmanaged, fontFileSize);
+  UnloadFileData(fontDataUnmanaged);
+
+  PSlugFont mem = static_cast<PSlugFont>(MemAlloc(sizeof(SlugFont)));
+  return new (mem) SlugFont(std::move(fontData), codepoints, nCodepoints);
+}
+
+inline void UnloadFontSlug(PSlugFont slugFont) {
+  if (slugFont) {
+    slugFont->~SlugFont();
+    MemFree(slugFont);
   }
 }

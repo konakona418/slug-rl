@@ -2,22 +2,25 @@
 //
 // By Zimeng Li (@konakona418)
 
-static const char* kFontFilenameJa = "NotoSansJP-Regular.ttf";
-static const char* kFontFilenameZh = "NotoSansSC-Regular.ttf";
+static const char kFontFilenameJa[] = "NotoSansJP-Regular.ttf";
+static const char kFontFilenameZh[] = "NotoSansSC-Regular.ttf";
 
-static const char* kSampleTextZh =
+static const char kSampleTextZh[] =
   u8"燕子去了，有再来的时候；\n"
   u8"杨柳枯了，有再青的时候；\n"
   u8"桃花谢了，有再开的时候。\n"
   u8"但是，聪明的，你告诉我，\n"
   u8"我们的日子为什么一去不复返呢？\n";
 
-static const char* kSampleTextJa =
-  u8"日本国民は、正義と秩序を基調とする国際平和を誠実に希求し、\n"
-  u8"国権の発動たる戦争と、武力による威嚇又は武力の行使は、\n"
-  u8"国際紛争を解決する手段としては、永久にこれを放棄する。\n";
+static const char kSampleTextJa[] =
+  u8"吾輩は猫である。\n"
+  u8"名前はまだ無い。\n"
+  u8"どこで生れたかとんと見当がつかぬ。\n"
+  u8"何でも薄暗いじめじめした所で\n"
+  u8"ニャーニャー泣いていた事だけは記憶している。\n"
+  u8"吾輩はここで始めて人間というものを見た。\n";
 
-static const char* kSampleTextEn =
+static const char kSampleTextEn[] =
   "Four score and seven years ago\n"
   "our fathers brought forth on this continent,\n"
   "a new nation, conceived in Liberty,\n"
@@ -28,9 +31,7 @@ static const int  kWindowWidth   = 1280;
 static const int  kWindowHeight  = 720;
 
 #include <cmath>
-#include <cstdint>
 #include <cstring>
-#include <memory>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -40,16 +41,6 @@ static const int  kWindowHeight  = 720;
 static constexpr float kMinViewScale = 0.1f;
 static constexpr float kMaxViewScale = 16.0f;
 static constexpr float kZoomStep     = 1.1f;
-
-SlugFont CreateSlugFont(const char* fontFileName, const int* codepoints, int nCodepoints) {
-  int                        fontFileSize      = 0;
-  auto*                      fontDataUnmanaged = LoadFileData(fontFileName, &fontFileSize);
-  std::unique_ptr<uint8_t[]> fontData          = std::make_unique<uint8_t[]>(fontFileSize);
-  memcpy(fontData.get(), fontDataUnmanaged, fontFileSize);
-  UnloadFileData(fontDataUnmanaged);
-
-  return SlugFont(std::move(fontData), codepoints, nCodepoints);
-}
 
 int main(int argc, char** argv) {
   char*             sampleText;
@@ -89,12 +80,12 @@ int main(int argc, char** argv) {
   InitWindow(kWindowWidth, kWindowHeight, kWindowTitle);
   SetTargetFPS(60);
 
-  SlugFont slugFontJa = CreateSlugFont(
+  PSlugFont slugFontJa = LoadFontSlug(
     kFontFilenameJa,
     uniqueCodepointVec.data(),
     (int) uniqueCodepointVec.size());
 
-  SlugFont slugFontZh = CreateSlugFont(
+  PSlugFont slugFontZh = LoadFontSlug(
     kFontFilenameZh,
     uniqueCodepointVec.data(),
     (int) uniqueCodepointVec.size());
@@ -162,11 +153,11 @@ int main(int argc, char** argv) {
     rlScalef(viewScale, viewScale, 1.0f);
 
     if (fromFile) {
-      DrawCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 64.0f);
+      DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 64.0f, 0, WHITE);
     } else {
-      DrawCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 28.0f);
-      DrawCodepointsSlug(slugFontJa, codepointSections[1], sectionCounts[1], {25.0f, 200.0f}, 28.0f);
-      DrawCodepointsSlug(slugFontZh, codepointSections[2], sectionCounts[2], {25.0f, 375.0f}, 28.0f);
+      DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 28.0f, 0, Color{255, 255, 0, 255});
+      DrawTextCodepointsSlug(slugFontJa, codepointSections[1], sectionCounts[1], {25.0f, 200.0f}, 28.0f, 0, Color{0, 255, 255, 255});
+      DrawTextCodepointsSlug(slugFontZh, codepointSections[2], sectionCounts[2], {25.0f, 400.0f}, 28.0f, 0, Color{255, 182, 193, 255});
     }
 
     rlPopMatrix();
@@ -174,6 +165,9 @@ int main(int argc, char** argv) {
     EndBlendMode();
     EndDrawing();
   }
+
+  UnloadFontSlug(slugFontJa);
+  UnloadFontSlug(slugFontZh);
 
   CloseWindow();
 
