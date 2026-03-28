@@ -46,16 +46,16 @@ static const char kBloomDownsampleShader[] =
   "out vec4 finalColor;\n"
   "void main()\n"
   "{\n"
-  "    vec3 sum = vec3(0.0);\n"
-  "    for (int x = -1; x <= 1; x++)\n"
+  "  vec3 sum = vec3(0.0);\n"
+  "  for (int x = -1; x <= 1; x++)\n"
+  "  {\n"
+  "    for (int y = -1; y <= 1; y++)\n"
   "    {\n"
-  "        for (int y = -1; y <= 1; y++)\n"
-  "        {\n"
-  "            sum += texture(texture0, fragTexCoord + vec2(x, y) * texelSize).rgb;\n"
-  "        }\n"
+  "      sum += texture(texture0, fragTexCoord + vec2(x, y) * texelSize).rgb;\n"
   "    }\n"
-  "    vec3 blurred = sum / 9.0;\n"
-  "    finalColor = vec4(blurred, 1.0) * colDiffuse;\n"
+  "  }\n"
+  "  vec3 blurred = sum / 9.0;\n"
+  "  finalColor = vec4(blurred, 1.0) * colDiffuse;\n"
   "}\n";
 
 static const char kBloomUpsampleShader[] =
@@ -67,8 +67,8 @@ static const char kBloomUpsampleShader[] =
   "out vec4 finalColor;\n"
   "void main()\n"
   "{\n"
-  "    vec4 color = texture(texture0, fragTexCoord);\n"
-  "    finalColor = color * colDiffuse;\n"
+  "  vec4 color = texture(texture0, fragTexCoord);\n"
+  "  finalColor = color * colDiffuse;\n"
   "}\n";
 
 #include <cmath>
@@ -315,6 +315,8 @@ int main(int argc, char** argv) {
       std::stringstream ss;
       ss << "View Scale: " << viewScale << " | View Offset: (" << viewOffset.x << ", " << viewOffset.y << ")";
       DrawText(ss.str().c_str(), 10, kWindowHeight - 30, 20, YELLOW);
+
+      DrawFPS(10, 10);
     }
     EndDrawing();
   }
