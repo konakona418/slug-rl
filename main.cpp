@@ -179,6 +179,17 @@ int main(int argc, char** argv) {
     uniqueCodepointVec.data(),
     (int) uniqueCodepointVec.size());
 
+  Font raylibFontJa = LoadFontEx(
+    kFontFilenameJa,
+    96,
+    uniqueCodepointVec.data(),
+    (int) uniqueCodepointVec.size());
+  Font raylibFontZh = LoadFontEx(
+    kFontFilenameZh,
+    96,
+    uniqueCodepointVec.data(),
+    (int) uniqueCodepointVec.size());
+
   auto downsampleShader   = LoadShaderFromMemory(nullptr, kBloomDownsampleShader);
   auto upsampleShader     = LoadShaderFromMemory(nullptr, kBloomUpsampleShader);
   int  downsampleTexelLoc = GetShaderLocation(downsampleShader, "texelSize");
@@ -206,7 +217,9 @@ int main(int argc, char** argv) {
   Vector2 lastMousePos = {0.0f, 0.0f};
 
   bool fancyVFX = true;
+  bool useSlug  = true;
 
+  SetTextLineSpacing(0);
   while (!WindowShouldClose()) {
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
@@ -254,6 +267,10 @@ int main(int argc, char** argv) {
       fancyVFX = !fancyVFX;
     }
 
+    if (IsKeyPressed(KEY_ENTER)) {
+      useSlug = !useSlug;
+    }
+
     BeginTextureMode(renderTexture);
     {
       BeginBlendMode(BLEND_ALPHA);
@@ -263,12 +280,22 @@ int main(int argc, char** argv) {
       rlTranslatef(viewOffset.x, viewOffset.y, 0.0f);
       rlScalef(viewScale, viewScale, 1.0f);
 
-      if (fromFile) {
-        DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 64.0f, 0, WHITE);
+      if (useSlug) {
+        if (fromFile) {
+          DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 64.0f, 0, WHITE);
+        } else {
+          DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 28.0f, 0, Color{255, 255, 0, 255});
+          DrawTextCodepointsSlug(slugFontJa, codepointSections[1], sectionCounts[1], {25.0f, 200.0f}, 28.0f, 0, Color{0, 255, 255, 255});
+          DrawTextCodepointsSlug(slugFontZh, codepointSections[2], sectionCounts[2], {25.0f, 400.0f}, 28.0f, 0, Color{255, 182, 193, 255});
+        }
       } else {
-        DrawTextCodepointsSlug(slugFontZh, codepointSections[0], sectionCounts[0], {25.0f, 25.0f}, 28.0f, 0, Color{255, 255, 0, 255});
-        DrawTextCodepointsSlug(slugFontJa, codepointSections[1], sectionCounts[1], {25.0f, 200.0f}, 28.0f, 0, Color{0, 255, 255, 255});
-        DrawTextCodepointsSlug(slugFontZh, codepointSections[2], sectionCounts[2], {25.0f, 400.0f}, 28.0f, 0, Color{255, 182, 193, 255});
+        if (fromFile) {
+          DrawTextEx(raylibFontZh, sampleText, {25.0f, 25.0f}, 64.0f, 0.0f, WHITE);
+        } else {
+          DrawTextEx(raylibFontZh, kSampleTextZh, {25.0f, 25.0f}, 28.0f, 0.0f, Color{255, 255, 0, 255});
+          DrawTextEx(raylibFontJa, kSampleTextJa, {25.0f, 200.0f}, 28.0f, 0.0f, Color{0, 255, 255, 255});
+          DrawTextEx(raylibFontZh, kSampleTextEn, {25.0f, 400.0f}, 28.0f, 0.0f, Color{255, 182, 193, 255});
+        }
       }
       rlPopMatrix();
 
@@ -310,10 +337,10 @@ int main(int argc, char** argv) {
         EndBlendMode();
       }
 
-      DrawText("Mouse Wheel: Zoom | Middle Mouse Button: Pan | 0: Reset View | Space: Toggle VFX", 10, kWindowHeight - 60, 20, YELLOW);
+      DrawText("Mouse Wheel: Zoom | Middle Mouse Button: Pan | 0: Reset View | Space: Toggle VFX | Enter: Toggle Slug/Raylib", 10, kWindowHeight - 60, 20, YELLOW);
 
       std::stringstream ss;
-      ss << "View Scale: " << viewScale << " | View Offset: (" << viewOffset.x << ", " << viewOffset.y << ")";
+      ss << "Render: " << (useSlug ? "Slug" : "Raylib") << " | View Scale: " << viewScale << " | View Offset: (" << viewOffset.x << ", " << viewOffset.y << ")";
       DrawText(ss.str().c_str(), 10, kWindowHeight - 30, 20, YELLOW);
 
       DrawFPS(10, 10);
@@ -327,6 +354,9 @@ int main(int argc, char** argv) {
   }
   UnloadShader(downsampleShader);
   UnloadShader(upsampleShader);
+
+  UnloadFont(raylibFontJa);
+  UnloadFont(raylibFontZh);
 
   UnloadFontSlug(slugFontJa);
   UnloadFontSlug(slugFontZh);

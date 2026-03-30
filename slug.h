@@ -670,6 +670,10 @@ struct SlugFont {
     return (float) (ascent - descent + lineGap);
   }
 
+  float GetScaleForPixelHeight(float pixelHeight) const {
+    return stbtt_ScaleForPixelHeight(&fontInfo, pixelHeight);
+  }
+
   float GetAdvance(int codepoint, int nextCodepoint) const {
     auto it = codepointToGlyphIndex.find(codepoint);
     if (it == codepointToGlyphIndex.end()) return 0.0f;
@@ -691,8 +695,7 @@ inline void DrawTextCodepointSlug_Impl(PSlugFont slugFont, int codepoint, Vector
 }
 
 inline void DrawTextCodepointsSlug(PSlugFont slugFont, const int* codepoints, int nCodepoints, Vector2 position, float fontSize, float spacing, Color tint) {
-  float   lineHeight   = slugFont->GetLineAdvance();
-  float   uniformScale = lineHeight > 0.0f ? fontSize / lineHeight : 1.0f;
+  float   uniformScale = slugFont->GetScaleForPixelHeight(fontSize);
   Vector2 scale        = {uniformScale, uniformScale};
 
   float startX   = position.x;
