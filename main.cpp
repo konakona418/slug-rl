@@ -164,6 +164,10 @@ int main(int argc, char** argv) {
     uniqueCodepoints.insert(sectionCodepoints, sectionCodepoints + sectionCount);
   }
 
+  for (int c = 32; c < 127; ++c) {
+    uniqueCodepoints.insert(c);
+  }
+
   std::vector<int> uniqueCodepointVec(uniqueCodepoints.begin(), uniqueCodepoints.end());
 
   InitWindow(kWindowWidth, kWindowHeight, kWindowTitle);
@@ -219,8 +223,20 @@ int main(int argc, char** argv) {
   bool fancyVFX = true;
   bool useSlug  = true;
 
+  const int     demoCodepoint = U'的';
+  const float   demoFontSize  = 96.0f;
+  const Vector2 demoPosition  = {1020.0f, 210.0f};
+  const Vector2 demoOrigin    = {28.0f, 56.0f};
+  float         demoRotation  = 0.0f;
+
+  int  rotationPivotCodepointLength = 0;
+  int* rotationPivotTextCodepoints  = LoadCodepoints("Rotation Pivot", &rotationPivotCodepointLength);
+
   SetTextLineSpacing(0);
   while (!WindowShouldClose()) {
+    demoRotation += 90.0f * GetFrameTime();
+    if (demoRotation >= 360.0f) demoRotation -= 360.0f;
+
     float wheel = GetMouseWheelMove();
     if (wheel != 0.0f) {
       Vector2 mousePos  = GetMousePosition();
@@ -288,6 +304,15 @@ int main(int argc, char** argv) {
           DrawTextCodepointsSlug(slugFontJa, codepointSections[1], sectionCounts[1], {25.0f, 200.0f}, 28.0f, 0, Color{0, 255, 255, 255});
           DrawTextCodepointsSlug(slugFontZh, codepointSections[2], sectionCounts[2], {25.0f, 400.0f}, 28.0f, 0, Color{255, 182, 193, 255});
         }
+
+        DrawTextCodepointSlugPro(
+          slugFontZh,
+          demoCodepoint,
+          demoPosition,
+          demoOrigin,
+          demoRotation,
+          demoFontSize,
+          ORANGE);
       } else {
         if (fromFile) {
           DrawTextEx(raylibFontZh, sampleText, {25.0f, 25.0f}, 64.0f, 0.0f, WHITE);
@@ -296,6 +321,25 @@ int main(int argc, char** argv) {
           DrawTextEx(raylibFontJa, kSampleTextJa, {25.0f, 200.0f}, 28.0f, 0.0f, Color{0, 255, 255, 255});
           DrawTextEx(raylibFontZh, kSampleTextEn, {25.0f, 400.0f}, 28.0f, 0.0f, Color{255, 182, 193, 255});
         }
+
+        int         utf8Size      = 0;
+        const char* demoUtf8Glyph = CodepointToUTF8(demoCodepoint, &utf8Size);
+        DrawTextPro(
+          raylibFontZh,
+          demoUtf8Glyph,
+          demoPosition,
+          demoOrigin,
+          demoRotation,
+          demoFontSize,
+          0.0f,
+          ORANGE);
+      }
+
+      DrawCircleLinesV(demoPosition, 6.0f, RED);
+      if (useSlug) {
+        DrawTextCodepointsSlug(slugFontZh, rotationPivotTextCodepoints, rotationPivotCodepointLength, {demoPosition.x + 10.0f, demoPosition.y - 10.0f}, 18.0f, 0, RED);
+      } else {
+        DrawTextEx(raylibFontZh, "Rotation Pivot", {demoPosition.x + 10.0f, demoPosition.y - 10.0f}, 18.0f, 0.0f, RED);
       }
       rlPopMatrix();
 
@@ -337,16 +381,20 @@ int main(int argc, char** argv) {
         EndBlendMode();
       }
 
-      DrawText("Mouse Wheel: Zoom | Middle Mouse Button: Pan | 0: Reset View | Space: Toggle VFX | Enter: Toggle Slug/Raylib", 10, kWindowHeight - 60, 20, YELLOW);
-
+      DrawText("Mouse Wheel: Zoom | Middle Mouse Button: Pan | 0: Reset View | Space: Toggle VFX | Enter: Toggle Slug/Raylib", 10, kWindowHeight - 55, 20, YELLOW);
       std::stringstream ss;
-      ss << "Render: " << (useSlug ? "Slug" : "Raylib") << " | View Scale: " << viewScale << " | View Offset: (" << viewOffset.x << ", " << viewOffset.y << ")";
+      ss << "Render: " << (useSlug ? "Slug" : "Raylib")
+         << " | Rotation: " << demoRotation
+         << " | View Scale: " << viewScale
+         << " | View Offset: (" << viewOffset.x << ", " << viewOffset.y << ")";
       DrawText(ss.str().c_str(), 10, kWindowHeight - 30, 20, YELLOW);
 
       DrawFPS(10, 10);
     }
     EndDrawing();
   }
+
+  UnloadCodepoints(rotationPivotTextCodepoints);
 
   UnloadRenderTexture(renderTexture);
   for (int i = 0; i < kBloomLevels; ++i) {

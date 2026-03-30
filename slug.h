@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -694,6 +695,23 @@ inline void DrawTextCodepointSlug_Impl(PSlugFont slugFont, int codepoint, Vector
   rlPopMatrix();
 }
 
+inline void DrawTextCodepointSlug_Impl(
+  PSlugFont slugFont,
+  int       codepoint,
+  Vector2   position,
+  Vector2   scale,
+  Vector2   origin,
+  float     rotation,
+  Color     tint) {
+  rlPushMatrix();
+  rlTranslatef(position.x, position.y, 0.0f);
+  rlRotatef(rotation, 0.0f, 0.0f, 1.0f);
+  rlTranslatef(-origin.x, -origin.y, 0.0f);
+  rlScalef(scale.x, scale.y, 1.0f);
+  slugFont->RenderChar(codepoint, {0.0f, 0.0f}, tint);
+  rlPopMatrix();
+}
+
 inline void DrawTextCodepointsSlug(PSlugFont slugFont, const int* codepoints, int nCodepoints, Vector2 position, float fontSize, float spacing, Color tint) {
   float   uniformScale = slugFont->GetScaleForPixelHeight(fontSize);
   Vector2 scale        = {uniformScale, uniformScale};
@@ -722,7 +740,37 @@ inline void DrawTextCodepointSlug(PSlugFont slugFont, int codepoint, Vector2 pos
   DrawTextCodepointsSlug(slugFont, &codepoint, 1, position, fontSize, 0.0f, tint);
 }
 
+inline void DrawTextCodepointSlugPro(
+  PSlugFont slugFont,
+  int       codepoint,
+  Vector2   position,
+  Vector2   origin,
+  float     rotation,
+  float     fontSize,
+  Color     tint) {
+  float   uniformScale  = slugFont->GetScaleForPixelHeight(fontSize);
+  Vector2 scale         = {uniformScale, uniformScale};
+  float   ascentOffsetY = slugFont->GetAscent() * scale.y;
+
+  rlPushMatrix();
+  rlTranslatef(position.x, position.y, 0.0f);
+  rlRotatef(rotation, 0.0f, 0.0f, 1.0f);
+  rlTranslatef(-origin.x, -origin.y + ascentOffsetY, 0.0f);
+  rlScalef(scale.x, scale.y, 1.0f);
+  slugFont->RenderChar(codepoint, {0.0f, 0.0f}, tint);
+  rlPopMatrix();
+}
+
 inline PSlugFont LoadFontSlug(const char* fontFileName, const int* codepoints, int nCodepoints) {
+  static const auto asciiCodepoints =
+    []() {
+      std::vector<int> codepoints;
+      for (int c = 32; c < 127; ++c) {
+        codepoints.push_back(c);
+      }
+      return codepoints;
+    }();
+
   int   fontFileSize      = 0;
   auto* fontDataUnmanaged = LoadFileData(fontFileName, &fontFileSize);
 
@@ -730,8 +778,12 @@ inline PSlugFont LoadFontSlug(const char* fontFileName, const int* codepoints, i
   memcpy(fontData.get(), fontDataUnmanaged, fontFileSize);
   UnloadFileData(fontDataUnmanaged);
 
+  std::set<int> uniqueCodepoints(codepoints, codepoints + nCodepoints);
+  uniqueCodepoints.insert(asciiCodepoints.begin(), asciiCodepoints.end());
+  std::vector<int> uniqueCodepointsVec(uniqueCodepoints.begin(), uniqueCodepoints.end());
+
   PSlugFont mem = static_cast<PSlugFont>(MemAlloc(sizeof(SlugFont)));
-  return new (mem) SlugFont(std::move(fontData), codepoints, nCodepoints);
+  return new (mem) SlugFont(std::move(fontData), uniqueCodepointsVec.data(), (int) uniqueCodepointsVec.size());
 }
 
 inline void UnloadFontSlug(PSlugFont slugFont) {
